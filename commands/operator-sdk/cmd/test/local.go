@@ -34,6 +34,7 @@ type testLocalConfig struct {
 	namespacedManPath string
 	goTestFlags       string
 	namespace         string
+	testType 		  string
 }
 
 var tlConfig testLocalConfig
@@ -54,6 +55,7 @@ func NewTestLocalCmd() *cobra.Command {
 	testCmd.Flags().StringVar(&tlConfig.namespacedManPath, "namespaced-manifest", "", "Path to manifest for per-test, namespaced resources (e.g. RBAC and Operator manifest)")
 	testCmd.Flags().StringVar(&tlConfig.goTestFlags, "go-test-flags", "", "Additional flags to pass to go test")
 	testCmd.Flags().StringVar(&tlConfig.namespace, "namespace", "", "If non-empty, single namespace to run tests in")
+	testCmd.Flags().StringVar(&tlConfig.testType, "type", "", "Set `ansible` to run ansible test. Defaults to normal tests")
 
 	return testCmd
 }
@@ -92,8 +94,17 @@ func testLocalFunc(cmd *cobra.Command, args []string) {
 				log.Fatalf("could not delete temporary namespace manifest file")
 			}
 		}()
+
 	}
+
 	testArgs := []string{"test", args[0] + "/..."}
+	if tlConfig.testType == "ansible" {
+		testArgs[1] = "github.com/operator-framework/" +
+			"operator-sdk/commands/operator-sdk/cmd/test/..."
+		if err := os.Setenv("TESTDIR", args[0]); err != nil {
+			cmdError.ExitWithError(1, err)
+		}
+	}
 	testArgs = append(testArgs, "-"+test.KubeConfigFlag, tlConfig.kubeconfig)
 	testArgs = append(testArgs, "-"+test.NamespacedManPathFlag, tlConfig.namespacedManPath)
 	testArgs = append(testArgs, "-"+test.GlobalManPathFlag, tlConfig.globalManPath)
