@@ -20,6 +20,8 @@ import (
 	"github.com/operator-framework/operator-sdk/pkg/test/e2eutil"
 	"sort"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
@@ -90,31 +92,36 @@ func AnsibleCluster(t *testing.T) {
 	}
 	defer ctx.Cleanup(t)
 
-	fmt.Println("start")
 	err = ctx.InitializeClusterResources()
 	if err != nil {
 		t.Fatalf("failed to initialize cluster resources: %v", err)
 	}
-	fmt.Println("Initialized")
 	t.Log("Initialized cluster resources")
-	fmt.Println("namespaced")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// get global framework variables
 	f := framework.Global
-	// wait for memcached-operator to be ready
 	err = e2eutil.WaitForDeployment(t, f.KubeClient, namespace, "ansible-operator", 1, retryInterval, timeout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("Deployment successfull")
 
-	fmt.Println("Registerging appGVK")
+	appCRDReader, err := os.Open(*framework.Global.GlobalManPath)
+	if err != nil {
+		t.Fatalf("failed to open global resource manifest: %v", err)
+	}
+
+	d := yaml.NewYAMLOrJSONDecoder(appCRDReader, 65535)
+	var appCRD v1beta1.CustomResourceDefinition
+	err = d.Decode(&appCRD)
+	if err != nil {
+		t.Fatalf("failed to decode global resource manifest: %v", err)
+	}
 
 	appGVK := schema.GroupVersion{
-		Group:   "app.example.com",
-		Version: "v1alpha1",
+		Group:   appCRD.Spec.Group,
+		Version: appCRD.Spec.Version,
 	}
 
 	framework.AddToFrameworkScheme(func(scheme *runtime.Scheme) error {
@@ -126,10 +133,18 @@ func AnsibleCluster(t *testing.T) {
 		Items: nil,
 	})
 
+	queryClient, err := dynclient.New(framework.Global.KubeConfig, dynclient.Options{})
+
+	if err != nil {
+		t.Logf("Error create new query kubeclient %+v\n", err)
+	} else {
+		t.Logf("query kubeclient created\n")
+	}
+
+	//TODO: itereate over multiple test directories
 	testDirs, err := getTestDirs(testDir + "/test-example")
 
 	sort.Strings(testDirs)
-
 
 	for _, dir := range testDirs {
 
@@ -198,14 +213,13 @@ func AnsibleCluster(t *testing.T) {
 
 		r, err := os.Open(dir + "/assert.yaml")
 		if err != nil {
-			fmt.Printf("error reading assert.yaml %s\n", err.Error())
-			t.Logf("error reading assert.yaml %s\n", err.Error())
+			t.Logf("error reading assert.yaml %v\n", err)
 		}
 
 		asserts, err := readAsserts(r)
+		t.Logf("asserts read %+v\n", asserts)
 		if err != nil {
-			fmt.Printf("error loading asserts %s\n", err.Error())
-			t.Logf("error loading asserts %s\n", err.Error())
+			t.Logf("error loading asserts %v\n", err)
 		}
 
 		resources := make([]*unstructured.Unstructured, 0)
@@ -214,20 +228,18 @@ func AnsibleCluster(t *testing.T) {
 		fmt.Printf("Printing asserts\n")
 
 		for _, assert := range asserts {
-			//fmt.Printf("%d, %+v\n", i, assert)
 			u := unstructured.Unstructured{}
 			gv, err := schema.ParseGroupVersion(assert.Resource["apiVersion"])
 			if err != nil {
-				panic("error converting gvk")
+				t.Logf("error converting gvk %+v\n", err)
+				t.Fail()
 			}
 			gvk := gv.WithKind(assert.Resource["kind"])
 			u.SetGroupVersionKind(gvk)
 			resources = append(resources, &u)
 			results = append(results, assert.Result)
 		}
-		fmt.Printf("Waiting for asserts\n")
-
-		err = WaitForResources(t, resources, results, namespace, retryInterval, timeout)
+		err = WaitForResources(t, queryClient, resources, results, namespace, retryInterval, timeout)
 		if err != nil {
 			t.Logf("error matching asserts %s\n", err)
 			t.Fail()
@@ -235,43 +247,42 @@ func AnsibleCluster(t *testing.T) {
 	}
 }
 
-func WaitForResources(t *testing.T, resources []*unstructured.Unstructured, results []map[string]interface{}, namespace string, retryInterval, timeout time.Duration) error {
+func WaitForResources(t *testing.T, queryClient dynclient.Client, resources []*unstructured.Unstructured, results []map[string]interface{}, namespace string, retryInterval, timeout time.Duration) error {
 	err := wait.Poll(retryInterval, timeout, func() (done bool, err error) {
 		for i, r := range resources {
 
 			u := &unstructured.Unstructured{}
 
-			fmt.Printf("GVK is %+v %v\n", r.GroupVersionKind(), i)
 			lo := crclient.InNamespace(namespace)
 
 			u.SetGroupVersionKind(r.GroupVersionKind())
-			//u.SetNamespace(r.GetNamespace())
-			//u.SetName(r.GetName())
 
-			err := framework.Global.DynamicClient.List(context.TODO(), lo, u)
+			err := queryClient.List(context.TODO(), lo, u)
 			if err != nil {
 				fmt.Printf("err getting list %s\n", err.Error())
+			} else {
+				ul, _ := u.ToList()
+				t.Logf("retrieved %+v items\n", ul.Items)
 			}
 			counter := 0
-			err = u.EachListItem(func(object runtime.Object) error {
+			err = u.EachListItem(func(_ runtime.Object) error {
 				counter++
 				return nil
 			})
 			if err != nil {
-				panic("error calling each item")
+				t.Logf("error calling each item %+v", err)
+				return true, err
 			}
 
 			if rc, ok := results[i]["number"].(float64); ok {
 				if int(rc) != counter {
-					fmt.Printf("counter is not equal expected counter %v\n", counter)
-					t.Logf("waiting for the counter to equal expected number")
+					t.Logf("waiting for the counter %+v to equal expected number %v", counter, rc)
 					return false, nil
 				} else {
 					t.Logf("counter is equal to expected counter")
 					return true, nil
 				}
 			} else {
-				fmt.Printf("cannot convert result.number to float64")
 				return false, errors.New("cannot convert result.number to float64")
 			}
 		}

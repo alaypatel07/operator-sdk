@@ -30,3 +30,12 @@
     ```
     
     example [here](https://github.com/alaypatel07/ansible-operator/tree/e2e-tests/example/test/test-example)
+    
+5. To test the [etcd-ansible-operator](https://github.com/water-hole/etcd-ansible-operator), use the following commands:
+
+    ```
+        $mkdir -p $GOPATH/src/github.com/water-hole && cd $GOPATH/src/github.com/water-hole && git clone https://github.com/water-hole/etcd-ansible-operator && cd etcd-ansible-operator
+        $ operator-sdk test local  ./test --namespaced-manifest $(pwd)/deploy/namespace-init.yaml --global-manifest $(pwd)/deploy/crd.yaml --type ansible 
+    ```
+    
+    Tip: use `$watch kubectl get pods --all-namespaces` to watch the pods come up and die during the running the tests
