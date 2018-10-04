@@ -43,7 +43,7 @@ func MainEntry(m *testing.M) {
 	if err != nil {
 		log.Fatalf("failed to change directory to project root: %v", err)
 	}
-	if err := setup(kubeconfigPath, namespacedManPath, singleNamespace); err != nil {
+	if err := setup(kubeconfigPath, globalManPath, namespacedManPath, singleNamespace); err != nil {
 		log.Fatalf("failed to set up framework: %v", err)
 	}
 	// setup context to use when setting up crd

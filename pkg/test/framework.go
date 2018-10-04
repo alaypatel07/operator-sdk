@@ -51,12 +51,13 @@ type Framework struct {
 	RestMapper        *restmapper.DeferredDiscoveryRESTMapper
 	DynamicClient     dynclient.Client
 	DynamicDecoder    runtime.Decoder
+	GlobalManPath     *string
 	NamespacedManPath *string
 	SingleNamespace   bool
 	Namespace         string
 }
 
-func setup(kubeconfigPath, namespacedManPath *string, singleNamespace *bool) error {
+func setup(kubeconfigPath, globalManPath *string, namespacedManPath *string, singleNamespace *bool) error {
 	var err error
 	var kubeconfig *rest.Config
 	if *kubeconfigPath == "incluster" {
@@ -109,6 +110,7 @@ func setup(kubeconfigPath, namespacedManPath *string, singleNamespace *bool) err
 		Scheme:            scheme,
 		DynamicClient:     dynClient,
 		DynamicDecoder:    dynDec,
+		GlobalManPath:     globalManPath,
 		NamespacedManPath: namespacedManPath,
 		SingleNamespace:   *singleNamespace,
 		Namespace:         namespace,
