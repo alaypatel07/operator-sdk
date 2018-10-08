@@ -16,7 +16,7 @@
     ```
 
     test
-    ├── test-example
+    ├── test-name
         ├── 00
         │   ├── assert.yaml
         │   └── create.yaml

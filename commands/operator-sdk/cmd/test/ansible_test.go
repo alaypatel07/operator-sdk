@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	dynclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"io/ioutil"
 )
 
 var (
@@ -137,112 +138,121 @@ func AnsibleCluster(t *testing.T) {
 
 	if err != nil {
 		t.Logf("Error create new query kubeclient %+v\n", err)
+		t.Fail()
 	} else {
 		t.Logf("query kubeclient created\n")
 	}
 
-	//TODO: itereate over multiple test directories
-	testDirs, err := getTestDirs(testDir + "/test-example")
+	tests, err := ioutil.ReadDir(testDir)
 
-	sort.Strings(testDirs)
+	for testNumber, test := range tests {
+		t.Logf("Running test number %+v, with test directory %+v\n", testNumber, test)
+		//TODO: itereate over multiple test directories
+		if test == nil {
+			t.Fail()
+		}
+		testDirs, _ := getTestDirs(testDir + "/" + test.Name())
 
-	for _, dir := range testDirs {
+		sort.Strings(testDirs)
 
-		cf, err := os.Open(dir + "/create.yaml")
-		if err == nil {
-			c, err := readCrs(cf, namespace)
-			if err != nil {
-				panic(err)
-			}
-			ctx.AddFinalizerFn(func() error {
+		for _, dir := range testDirs {
+
+			cf, err := os.Open(dir + "/create.yaml")
+			if err == nil {
+				c, err := readCrs(cf, namespace)
+				if err != nil {
+					panic(err)
+				}
+				ctx.AddFinalizerFn(func() error {
+					for _, cr := range c {
+						framework.Global.DynamicClient.Delete(context.TODO(), cr)
+					}
+					return nil
+				})
 				for _, cr := range c {
-					framework.Global.DynamicClient.Delete(context.TODO(), cr)
+					err = framework.Global.DynamicClient.Create(context.TODO(), cr)
+					if err != nil {
+						t.Logf("error creating crs %+v\n", err)
+						t.Fail()
+					}
 				}
-				return nil
-			})
-			for _, cr := range c {
-				err = framework.Global.DynamicClient.Create(context.TODO(), cr)
+			}
+			uf, err := os.Open(dir + "/update.yaml")
+			if err == nil {
+				u, err := readCrs(uf, namespace)
 				if err != nil {
-					t.Logf("error creating crs %+v\n", err)
-					t.Fail()
+					panic(err)
 				}
-			}
-		}
-		uf, err := os.Open(dir + "/update.yaml")
-		if err == nil {
-			u, err := readCrs(uf, namespace)
-			if err != nil {
-				panic(err)
-			}
-			ctx.AddFinalizerFn(func() error {
+				ctx.AddFinalizerFn(func() error {
+					for _, cr := range u {
+						framework.Global.DynamicClient.Delete(context.TODO(), cr)
+					}
+					return nil
+				})
 				for _, cr := range u {
-					framework.Global.DynamicClient.Delete(context.TODO(), cr)
-				}
-				return nil
-			})
-			for _, cr := range u {
-				ok := types.NamespacedName{cr.GetNamespace(), cr.GetName()}
-				var c unstructured.Unstructured
-				err := framework.Global.DynamicClient.Get(context.TODO(), ok, &c)
-				if err != nil {
-					t.Logf("error getting cr for update %+v\n", err)
-					t.Fail()
-				}
-				cr.SetResourceVersion(c.GetResourceVersion())
-				err = framework.Global.DynamicClient.Update(context.TODO(), cr)
-				if err != nil {
-					t.Logf("error updating cr %+v\n", err)
-					t.Fail()
+					ok := types.NamespacedName{cr.GetNamespace(), cr.GetName()}
+					var c unstructured.Unstructured
+					err := framework.Global.DynamicClient.Get(context.TODO(), ok, &c)
+					if err != nil {
+						t.Logf("error getting cr for update %+v\n", err)
+						t.Fail()
+					}
+					cr.SetResourceVersion(c.GetResourceVersion())
+					err = framework.Global.DynamicClient.Update(context.TODO(), cr)
+					if err != nil {
+						t.Logf("error updating cr %+v\n", err)
+						t.Fail()
+					}
 				}
 			}
-		}
-		df, err := os.Open(dir + "/delete.yaml")
-		if err == nil {
-			d, err := readCrs(df, namespace)
+			df, err := os.Open(dir + "/delete.yaml")
+			if err == nil {
+				d, err := readCrs(df, namespace)
+				if err != nil {
+					panic(err)
+				}
+				for _, cr := range d {
+					err = framework.Global.DynamicClient.Delete(context.TODO(), cr)
+					if err != nil {
+						t.Logf("error deleting crs %+v\n", err)
+						t.Fail()
+					}
+				}
+			}
+
+			r, err := os.Open(dir + "/assert.yaml")
 			if err != nil {
-				panic(err)
+				t.Logf("error reading assert.yaml %v\n", err)
 			}
-			for _, cr := range d {
-				err = framework.Global.DynamicClient.Delete(context.TODO(), cr)
+
+			asserts, err := readAsserts(r)
+			t.Logf("asserts read %+v\n", asserts)
+			if err != nil {
+				t.Logf("error loading asserts %v\n", err)
+			}
+
+			resources := make([]*unstructured.Unstructured, 0)
+			results := make([]map[string]interface{}, 0)
+
+			fmt.Printf("Printing asserts\n")
+
+			for _, assert := range asserts {
+				u := unstructured.Unstructured{}
+				gv, err := schema.ParseGroupVersion(assert.Resource["apiVersion"])
 				if err != nil {
-					t.Logf("error deleting crs %+v\n", err)
+					t.Logf("error converting gvk %+v\n", err)
 					t.Fail()
 				}
+				gvk := gv.WithKind(assert.Resource["kind"])
+				u.SetGroupVersionKind(gvk)
+				resources = append(resources, &u)
+				results = append(results, assert.Result)
 			}
-		}
-
-		r, err := os.Open(dir + "/assert.yaml")
-		if err != nil {
-			t.Logf("error reading assert.yaml %v\n", err)
-		}
-
-		asserts, err := readAsserts(r)
-		t.Logf("asserts read %+v\n", asserts)
-		if err != nil {
-			t.Logf("error loading asserts %v\n", err)
-		}
-
-		resources := make([]*unstructured.Unstructured, 0)
-		results := make([]map[string]interface{}, 0)
-
-		fmt.Printf("Printing asserts\n")
-
-		for _, assert := range asserts {
-			u := unstructured.Unstructured{}
-			gv, err := schema.ParseGroupVersion(assert.Resource["apiVersion"])
+			err = WaitForResources(t, queryClient, resources, results, namespace, retryInterval, timeout)
 			if err != nil {
-				t.Logf("error converting gvk %+v\n", err)
+				t.Logf("error matching asserts %s\n", err)
 				t.Fail()
 			}
-			gvk := gv.WithKind(assert.Resource["kind"])
-			u.SetGroupVersionKind(gvk)
-			resources = append(resources, &u)
-			results = append(results, assert.Result)
-		}
-		err = WaitForResources(t, queryClient, resources, results, namespace, retryInterval, timeout)
-		if err != nil {
-			t.Logf("error matching asserts %s\n", err)
-			t.Fail()
 		}
 	}
 }
